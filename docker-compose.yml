@@ -1,0 +1,10 @@
+version: "3.8"
+services:
+  foundry:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+    working_dir: /app
+    tty: true
