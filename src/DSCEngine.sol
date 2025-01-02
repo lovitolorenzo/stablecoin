@@ -42,14 +42,19 @@ import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/Ag
  * @notice Tis contract is VERY loosely based on the MakerDao DSS (DAI) system.
  */
 
-contract DSCEngine {
+contract DSCEngine is ReentrancyGuard {
     error DSCEngine__NeedsMoreThanZero();
     error DSCEngine__TokenAddressAndPriceFeedMustBeSameLength();
     error DSCEngine__NotAllowedToken();
     error DSCEngine__TransferFailed();
+    error DSCEngine__BreaksHealthFactor(uint256 healthFactor);
+    error DSCEngine__MintFailed();
 
     uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
     uint256 private constant PRECISION = 1e18;
+    uint256 private constant LIQUIDATION_THRESHOLD = 50; //200% overcollateralization
+    uint256 private constant LIQUIDATION_PRECISION = 100;
+    uint256 private constant MIN_HEALTH_FACTOR = 1;
 
     mapping(address token => address priceFeed) private s_priceFeeds;
     mapping(address user => mapping(address token => uint256 amount)) private s_collateralDeposited;
@@ -68,7 +73,7 @@ contract DSCEngine {
     }
 
     modifier isAllowedToken(address token) {
-        if (s_priceFeeds[token] == 0) {
+        if (s_priceFeeds[token] == address(0)) {
             revert DSCEngine__NotAllowedToken();
         }
         _;
@@ -120,7 +125,11 @@ contract DSCEngine {
     function mintDsc(uint256 amountDscToMint) external moreThanZero(amountDscToMint) nonReentrant {
         s_DSCMinted[msg.sender] += amountDscToMint;
         // if they minted too much compared to the collateral
-        revertIfHealthFactorIsBroken(msg.msg.sender);
+        _revertIfHealthFactorIsBroken(msg.sender);
+        bool minted = i_dsc.mint(msg.sender, amountDscToMint);
+        if (!minted) {
+            revert DSCEngine__MintFailed();
+        }
     }
 
     function burnDsc() external {}
@@ -194,10 +203,16 @@ contract DSCEngine {
         // 2. Get the value of the DSC
         // 3. Return the ratio
         (uint256 totalDscMinted, uint256 collateralValueInUsd) = _getAccountInformations(user);
+        uint256 collateralAdjustedForThreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+        return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
     }
 
-    function _revertIfHealthFactorIsBroken() internal view {
+    function _revertIfHealthFactorIsBroken(address user) internal view {
         // 1. Check health factor (do they have enough collateral?)
         // 2. Revert if not
+        uint256 userHealthFactor = _healthFactor(user);
+        if (userHealthFactor < MIN_HEALTH_FACTOR) {
+            revert DSCEngine__BreaksHealthFactor(userHealthFactor);
+        }
     }
 }
