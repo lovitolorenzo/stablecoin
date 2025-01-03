@@ -245,6 +245,14 @@ contract DSCEngine is ReentrancyGuard {
 
     function getHealthFactor(address token, uint256 usdAmountInWei) external view returns (uint256) {}
 
+    function calculateHealthFactor(uint256 totalDscMinted, uint256 collateralValueInUsd)
+        external
+        pure
+        returns (uint256)
+    {
+        return _calculateHealthFactor(totalDscMinted, collateralValueInUsd);
+    }
+
     function getTokenAmountFromUsd(address token, uint256 usdAmountInWei) public view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
         (, int256 price,,,) = priceFeed.latestRoundData();
@@ -339,12 +347,8 @@ contract DSCEngine is ReentrancyGuard {
     If a user goes below 1, then they can get liquidated
     */
     function _healthFactor(address user) private view returns (uint256) {
-        // 1. Get the value of the collateral
-        // 2. Get the value of the DSC
-        // 3. Return the ratio
-        (uint256 totalDscMinted, uint256 collateralValueInUsd) = _getAccountInformations(user);
-        uint256 collateralAdjustedForThreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
-        return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
+        (uint256 totalDscMinted, uint256 collateralValueInUsd) = _getAccountInformation(user);
+        return _calculateHealthFactor(totalDscMinted, collateralValueInUsd);
     }
 
     function _revertIfHealthFactorIsBroken(address user) internal view {
@@ -354,5 +358,19 @@ contract DSCEngine is ReentrancyGuard {
         if (userHealthFactor < MIN_HEALTH_FACTOR) {
             revert DSCEngine__BreaksHealthFactor(userHealthFactor);
         }
+    }
+
+    function _calculateHealthFactor(uint256 totalDscMinted, uint256 collateralValueInUsd)
+        internal
+        pure
+        returns (uint256)
+    {
+        // 1. Get the value of the collateral
+        // 2. Get the value of the DSC
+        // 3. Return the ratio
+
+        if (totalDscMinted == 0) return type(uint256).max;
+        uint256 collateralAdjustedForThreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+        return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
     }
 }
