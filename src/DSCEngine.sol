@@ -44,12 +44,13 @@ import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/Ag
 
 contract DSCEngine is ReentrancyGuard {
     error DSCEngine__NeedsMoreThanZero();
-    error DSCEngine__TokenAddressAndPriceFeedMustBeSameLength();
+    error DSCEngine__TokenAddressesAndPriceFeedAddressesAmountsDontMatch();
     error DSCEngine__NotAllowedToken();
     error DSCEngine__TransferFailed();
     error DSCEngine__BreaksHealthFactor(uint256 healthFactor);
     error DSCEngine__MintFailed();
     error DSCEngine__HealthFactorOk();
+    error DSCEngine__HealthFactorNotImproved();
 
     uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
     uint256 private constant PRECISION = 1e18;
@@ -66,7 +67,7 @@ contract DSCEngine is ReentrancyGuard {
     DecentralizedStableCoin private immutable i_dsc;
 
     event CollateralDepositer(address indexed user, address indexed token, uint256 indexed amount);
-    event CollateralRedeemed(address indexed user, address indexed token, uint256 indexed amount);
+    event CollateralRedeemed(address indexed redeemFrom, address indexed redeemTo, address token, uint256 amount);
 
     modifier moreThanZero(uint256 amount) {
         if (amount == 0) {
@@ -85,7 +86,7 @@ contract DSCEngine is ReentrancyGuard {
     constructor(address[] memory tokenAddresses, address[] memory priceFeedAddresses, address dscAddress) {
         //USD Price Feeds
         if (tokenAddresses.length != priceFeedAddresses.length) {
-            revert DSCEngine__TokenAddressAndPriceFeedMustBeSameLength();
+            revert DSCEngine__TokenAddressesAndPriceFeedAddressesAmountsDontMatch();
         }
 
         for (uint256 i = 0; i < tokenAddresses.length; i++) {
@@ -126,6 +127,16 @@ contract DSCEngine is ReentrancyGuard {
         // redeemCollateral already checks health factor
     }
 
+    function getAccountInformation(address user)
+        external
+        view
+        returns (uint256 totalDscMinted, uint256 collateralValueInUsd)
+    {
+        (totalDscMinted, collateralValueInUsd) = _getAccountInformations(user);
+    }
+
+    // PUBLIC FUNCTIONS
+
     // in order to redeem collateral:
     // 1. health factor must be over 1 AFTER collateral pulled
     // DRY: Dont' repeat yourself
@@ -135,13 +146,8 @@ contract DSCEngine is ReentrancyGuard {
         moreThanZero(amountCollateral)
         nonReentrant
     {
-        s_collateralDeposited[msg.sender][tokenCollateralAddress] -= amountCollateral;
-        emit CollateralRedeemed(msg.sender, tokenCollateralAddress, amountCollateral);
-        bool success = IERC20(tokenCollateralAddress).transfer(msg.sender, amountCollateral);
-        if (!success) {
-            revert DSCEngine__TransferFailed();
-        }
-        _revertIfHealthFactorIsBroken();
+        _redeemCollateral(msg.sender, msg.sender, tokenCollateralAddress, amountCollateral);
+        _revertIfHealthFactorIsBroken(msg.sender);
     }
 
     /*
@@ -164,8 +170,6 @@ contract DSCEngine is ReentrancyGuard {
 
     function redeemCollaterForDsc() external {}
 
-    function redeemCollater() external {}
-
     /*
     @notice Follows CEI: Check, Effect, Interact
     @notice they must have more collaretal value than the minimum threshold
@@ -181,16 +185,8 @@ contract DSCEngine is ReentrancyGuard {
         }
     }
 
-    function burnDsc() public moreThanZero(amount) {
-        s_DSCMinted[msg.sender] -= amount;
-        bool success = i_dsc.transferFrom(msg.sender, address(this), amount);
-
-        // I don't think this is necessary
-        if (!success) {
-            revert DSCEngine__TransferFailed();
-        }
-
-        i_dsc.burn(amount);
+    function burnDsc(uint256 amount) public moreThanZero(amount) {
+        _burnDsc(amount, msg.sender, msg.sender);
 
         // I don't think this is necessary
         _revertIfHealthFactorIsBroken(msg.sender);
@@ -231,6 +227,20 @@ contract DSCEngine is ReentrancyGuard {
 
         uint256 bonusCollateral = (tokenAmountFromDebtCovered * LIQUIDATION_BONUS) / LIQUIDATION_PRECISION;
         uint256 totalCollateralToRedeem = (tokenAmountFromDebtCovered + bonusCollateral);
+
+        _redeemCollateral(user, msg.sender, collateral, totalCollateralToRedeem);
+
+        // 4. Burn the DSC
+
+        _burnDsc(debtToCover, user, msg.sender);
+
+        // 5. Check if the health factor is now above MIN_HEALTH_FACTOR
+        uint256 endingUserHealthFactor = _healthFactor(user);
+        if (endingUserHealthFactor <= startingUserHealthFactor) {
+            revert DSCEngine__HealthFactorNotImproved();
+        }
+
+        _revertIfHealthFactorIsBroken(msg.sender);
     }
 
     function getHealthFactor(address token, uint256 usdAmountInWei) external view returns (uint256) {}
@@ -287,6 +297,32 @@ contract DSCEngine is ReentrancyGuard {
         // - ADDITIONAL_FEED_PRECISION ensures compatibility across price feeds with varying decimals.
         // - Divide by PRECISION to normalize the final result to the desired scale.
         return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
+    }
+
+    /* @dev Low level internal function, do not call unless the function calling it is 
+    * checking for health factor being broken
+    */
+    function _burnDsc(uint256 amountDscToBurn, address onBehalfOf, address dscFrom) private {
+        s_DSCMinted[onBehalfOf] -= amountDscToBurn;
+        bool success = i_dsc.transferFrom(dscFrom, address(this), amountDscToBurn);
+
+        // I don't think this is necessary
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+
+        i_dsc.burn(amountDscToBurn);
+    }
+
+    function _redeemCollateral(address from, address to, address tokenCollateralAddress, uint256 amountCollateral)
+        private
+    {
+        s_collateralDeposited[msg.sender][tokenCollateralAddress] -= amountCollateral;
+        emit CollateralRedeemed(from, to, tokenCollateralAddress, amountCollateral);
+        bool success = IERC20(tokenCollateralAddress).transfer(to, amountCollateral);
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
     }
 
     function _getAccountInformations(address user)
