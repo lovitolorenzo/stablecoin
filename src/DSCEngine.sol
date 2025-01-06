@@ -132,7 +132,7 @@ contract DSCEngine is ReentrancyGuard {
         view
         returns (uint256 totalDscMinted, uint256 collateralValueInUsd)
     {
-        (totalDscMinted, collateralValueInUsd) = _getAccountInformations(user);
+        (totalDscMinted, collateralValueInUsd) = _getAccountInformation(user);
     }
 
     // PUBLIC FUNCTIONS
@@ -333,7 +333,7 @@ contract DSCEngine is ReentrancyGuard {
         }
     }
 
-    function _getAccountInformations(address user)
+    function _getAccountInformation(address user)
         private
         view
         returns (uint256 totalDscMinted, uint256 collateralValueInUsd)
