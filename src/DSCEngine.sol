@@ -27,6 +27,7 @@ import {DecentralizedStableCoin} from "./DecentralizedStableCoin.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import {OracleLib} from "./libraries/OracleLib.sol";
 /**
  * @title DSCEngine
  * @author Lorenzo Lovito
@@ -51,6 +52,11 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__MintFailed();
     error DSCEngine__HealthFactorOk();
     error DSCEngine__HealthFactorNotImproved();
+
+    /**
+     * @notice Types
+     */
+    using {OracleLib} for AggregatorV3Interface;
 
     uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
     uint256 private constant PRECISION = 1e18;
@@ -255,7 +261,7 @@ contract DSCEngine is ReentrancyGuard {
 
     function getTokenAmountFromUsd(address token, uint256 usdAmountInWei) public view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
-        (, int256 price,,,) = priceFeed.latestRoundData();
+        (, int256 price,,,) = priceFeed.staleCheckLatestRoundData();
 
         return (usdAmountInWei * PRECISION) / (uint256(price) * ADDITIONAL_FEED_PRECISION);
     }
@@ -291,14 +297,14 @@ contract DSCEngine is ReentrancyGuard {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
 
         // Step 2: Retrieve the latest price of the token from the price feed
-        // - Chainlink price feeds provide price data as a tuple. The `latestRoundData()` function returns:
+        // - Chainlink price feeds provide price data as a tuple. The `staleCheckLatestRoundData()` function returns:
         //      - roundId: The unique ID of the price round (ignored here).
         //      - price: The latest price of the token in USD (with feed-specific decimals).
         //      - startedAt: The timestamp when the price round started (ignored here).
         //      - updatedAt: The timestamp of the last price update (ignored here).
         //      - answeredInRound: The ID of the round where the answer was derived (ignored here).
         // - Only the `price` value is relevant for this calculation.
-        (, int256 price,,,) = priceFeed.latestRoundData();
+        (, int256 price,,,) = priceFeed.staleCheckLatestRoundData();
 
         // Step 3: Calculate and return the USD value of the token amount
         // - Multiply the token price (adjusted for precision) by the amount of tokens provided.
